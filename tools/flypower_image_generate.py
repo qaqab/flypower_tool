@@ -4,6 +4,7 @@ import io
 import json
 import mimetypes
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
@@ -14,10 +15,10 @@ from dify_plugin.entities.tool import ToolInvokeMessage
 from openai import OpenAI
 
 from tools._image_utils import (
+    ModelListRequestError,
     build_usage_metadata,
-    build_usage_output,
     decode_image,
-    extract_model_ids,
+    fetch_openai_model_ids,
     image_model_ids,
     image_model_supports_operation,
     normalize_openai_base_url,
@@ -26,9 +27,13 @@ from tools._image_utils import (
 
 MAX_REFERENCE_IMAGES = 16
 MAX_INPUT_DOWNLOAD_BYTES = 50 * 1024 * 1024
-MAX_OUTPUT_DOWNLOAD_BYTES = 50 * 1024 * 1024
 INPUT_DOWNLOAD_TIMEOUT = 300
-OUTPUT_DOWNLOAD_TIMEOUT = 300
+OSS_API_BASE_URL = "https://workflotool-api-zelbzoxobn.cn-hangzhou.fcapp.run/workflow-tools-api"
+OSS_FILE_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-file/upload"
+OSS_URL_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-url/upload"
+OSS_API_TOKEN = "test_flyfus_dcdbd11d8e4c21b2d86c5de3473ace5d"
+OSS_UPLOAD_TIMEOUT = (10.0, 120.0)
+MAX_OSS_UPLOAD_WORKERS = 4
 
 
 class FlypowerImageGenerateTool(Tool):
@@ -53,15 +58,18 @@ class FlypowerImageGenerateTool(Tool):
             yield self.create_text_message(f"Model {model} does not support {operation} in the image model YAML.")
             return
 
-        client = OpenAI(
-            api_key=self.runtime.credentials["api_key"],
-            base_url=normalize_openai_base_url(self.runtime.credentials.get("endpoint_url")),
-        )
-
+        api_key = str(self.runtime.credentials["api_key"])
         try:
-            available_models = extract_model_ids(client.models.list())
-        except Exception as error:
-            yield self.create_text_message(f"Failed to list models: {error}")
+            normalized_base_url = normalize_openai_base_url(self.runtime.credentials.get("endpoint_url"))
+            if normalized_base_url is None:
+                yield self.create_text_message("API endpoint is missing.")
+                return
+            available_models = fetch_openai_model_ids(normalized_base_url, api_key)
+        except ValueError as error:
+            yield self.create_text_message(f"Invalid API endpoint: {error}")
+            return
+        except ModelListRequestError as error:
+            yield self.create_text_message(f"Failed to validate API access: {error}")
             return
         if model not in available_models:
             matched_models = sorted(supported_models & available_models)
@@ -74,6 +82,8 @@ class FlypowerImageGenerateTool(Tool):
                     f"No supported image model was returned by /models. Expected one of: {', '.join(sorted(supported_models))}."
                 )
             return
+
+        client = OpenAI(api_key=api_key, base_url=normalized_base_url)
 
         try:
             args: dict[str, Any] = {
@@ -103,26 +113,65 @@ class FlypowerImageGenerateTool(Tool):
             yield self.create_text_message(f"Failed to {operation} image: {error}")
             return
 
-        usage_metadata = build_usage_metadata(response)
-        image_count = 0
-        output_format = tool_parameters.get("output_format", "auto")
-        for image in getattr(response, "data", []):
+        uploads: list[tuple[str, bytes | str, str, str]] = []
+        for index, image in enumerate(getattr(response, "data", []), start=1):
             b64_json = getattr(image, "b64_json", None)
             image_url = getattr(image, "url", None)
             if b64_json:
                 mime_type, blob_image = decode_image(b64_json)
+                uploads.append(("file", blob_image, mime_type, self._output_filename(index, mime_type)))
             elif image_url:
-                mime_type, blob_image = self._download_output_image(str(image_url))
-            else:
-                continue
-            if output_format in {"png", "jpeg", "webp"}:
-                mime_type = f"image/{output_format}"
-            image_count += 1
-            yield self.create_blob_message(blob=blob_image, meta={"mime_type": mime_type, **usage_metadata})
+                uploads.append(("url", str(image_url), "", ""))
 
-        usage_output = build_usage_output(response, model=model, operation=operation, image_count=image_count)
-        if usage_output:
-            yield self.create_json_message(usage_output)
+        if not uploads:
+            yield self.create_text_message("The image model did not return any images.")
+            return
+
+        try:
+            with ThreadPoolExecutor(max_workers=min(MAX_OSS_UPLOAD_WORKERS, len(uploads))) as executor:
+                oss_urls = list(executor.map(self._upload_output_to_oss, uploads))
+        except Exception as error:
+            yield self.create_text_message(f"Failed to upload generated images to OSS: {error}")
+            return
+
+        usage_metadata = build_usage_metadata(response)
+        yield self.create_json_message({"urls": oss_urls, **usage_metadata})
+
+    @staticmethod
+    def _output_filename(index: int, mime_type: str) -> str:
+        return f"generated_image_{index}{FlypowerImageGenerateTool._extension_for_mime_type(mime_type)}"
+
+    @staticmethod
+    def _upload_output_to_oss(upload: tuple[str, bytes | str, str, str]) -> str:
+        upload_type, payload, mime_type, filename = upload
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {OSS_API_TOKEN}"}
+        if upload_type == "url":
+            response = requests.post(
+                OSS_URL_UPLOAD_ENDPOINT,
+                headers=headers,
+                json={"image_url": payload},
+                timeout=OSS_UPLOAD_TIMEOUT,
+                allow_redirects=False,
+            )
+        else:
+            response = requests.post(
+                OSS_FILE_UPLOAD_ENDPOINT,
+                headers=headers,
+                files={"file": (filename, payload, mime_type), "filename": (None, filename)},
+                timeout=OSS_UPLOAD_TIMEOUT,
+                allow_redirects=False,
+            )
+
+        if not 200 <= response.status_code < 300:
+            raise RuntimeError(f"OSS upload returned HTTP {response.status_code}")
+        try:
+            response_body = response.json()
+            public_url = response_body["data"]["public_url"]
+        except (KeyError, TypeError, ValueError, requests.JSONDecodeError):
+            raise RuntimeError("OSS upload returned an invalid response") from None
+        if not isinstance(public_url, str) or not public_url:
+            raise RuntimeError("OSS upload returned an invalid public URL")
+        return public_url
 
     @staticmethod
     def _parse_urls(value: object) -> list[str]:
@@ -274,32 +323,6 @@ class FlypowerImageGenerateTool(Tool):
         if isinstance(file_obj, dict):
             return file_obj.get(key)
         return getattr(file_obj, key, None)
-
-    @staticmethod
-    def _download_output_image(url: str) -> tuple[str, bytes]:
-        FlypowerImageGenerateTool._validate_http_url(url)
-        if url.startswith("data:image/"):
-            return decode_image(url)
-
-        response = requests.get(url, timeout=OUTPUT_DOWNLOAD_TIMEOUT, stream=True)
-        response.raise_for_status()
-
-        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        chunks: list[bytes] = []
-        downloaded = 0
-        for chunk in response.iter_content(chunk_size=1024 * 256):
-            if not chunk:
-                continue
-            downloaded += len(chunk)
-            if downloaded > MAX_OUTPUT_DOWNLOAD_BYTES:
-                raise ValueError(f"Output image is larger than {MAX_OUTPUT_DOWNLOAD_BYTES // 1024 // 1024}MB: {url}")
-            chunks.append(chunk)
-
-        if not chunks:
-            raise ValueError(f"Output image URL returned an empty body: {url}")
-
-        mime_type = content_type or mimetypes.guess_type(urlparse(url).path)[0] or "image/png"
-        return mime_type, b"".join(chunks)
 
     @staticmethod
     def _guess_extension(url: str, content_type: str) -> str:

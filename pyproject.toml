@@ -1,6 +1,6 @@
 [project]
 name = "flypower-image-tool"
-version = "0.1.0"
+version = "0.0.4"
 description = "Dify image generation tool plugin for Flypower OpenAI-compatible endpoints."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,3 +16,6 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.14",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

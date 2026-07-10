@@ -1,26 +1,81 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Final, Literal
+from urllib.parse import urlsplit, urlunsplit
 
+import requests
 import yaml
 
 IMAGE_MODELS_DIR = Path(__file__).resolve().parents[1] / "models" / "image"
+MODEL_LIST_TIMEOUT: Final = (10.0, 30.0)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelListRequestError(RuntimeError):
+    category: Literal["http", "invalid_response", "network", "timeout"]
+    endpoint: str
+    status_code: int | None = None
+
+    def __str__(self) -> str:
+        if self.status_code is not None:
+            return f"{self.category} error from {self.endpoint} (HTTP {self.status_code})"
+        return f"{self.category} error from {self.endpoint}"
 
 
 def normalize_openai_base_url(base_url: str | None) -> str | None:
     if not base_url:
         return None
 
-    cleaned = str(base_url).strip().rstrip("/")
+    cleaned = str(base_url).strip()
     if not cleaned:
         return None
 
-    if cleaned.endswith("/v1"):
-        return cleaned
-    return f"{cleaned}/v1"
+    parsed = urlsplit(cleaned)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("API 地址必须是 HTTPS URL")
+    if "@" in parsed.netloc:
+        raise ValueError("API 地址不能包含用户名或密码")
+    if parsed.query or parsed.fragment:
+        raise ValueError("API 地址不能包含查询参数或片段")
+
+    path = parsed.path.rstrip("/")
+    versioned_path = path if path.endswith("/v1") else f"{path}/v1"
+    return urlunsplit(("https", parsed.netloc, versioned_path, "", ""))
+
+
+def fetch_openai_model_ids(endpoint_url: str, api_key: str) -> set[str]:
+    normalized_base_url = normalize_openai_base_url(endpoint_url)
+    if normalized_base_url is None:
+        raise ValueError("请填写 API 地址")
+
+    models_endpoint = f"{normalized_base_url}/models"
+    try:
+        response = requests.get(
+            models_endpoint,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
+            timeout=MODEL_LIST_TIMEOUT,
+            allow_redirects=False,
+        )
+    except requests.Timeout:
+        raise ModelListRequestError("timeout", models_endpoint) from None
+    except requests.RequestException:
+        raise ModelListRequestError("network", models_endpoint) from None
+
+    if not 200 <= response.status_code < 300:
+        raise ModelListRequestError("http", models_endpoint, response.status_code)
+
+    try:
+        payload = response.json()
+    except requests.JSONDecodeError:
+        raise ModelListRequestError("invalid_response", models_endpoint) from None
+
+    if not isinstance(payload, dict):
+        raise ModelListRequestError("invalid_response", models_endpoint)
+    return extract_model_ids(payload)
 
 
 def decode_image(base64_image: str) -> tuple[str, bytes]:

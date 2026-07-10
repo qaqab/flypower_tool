@@ -1,10 +1,12 @@
+import logging
 from typing import Any
 
 from dify_plugin import ToolProvider
 from dify_plugin.errors.tool import ToolProviderCredentialValidationError
-from openai import OpenAI
 
-from tools._image_utils import extract_model_ids, image_model_ids, normalize_openai_base_url
+from tools._image_utils import ModelListRequestError, fetch_openai_model_ids, image_model_ids
+
+logger = logging.getLogger(__name__)
 
 
 class FlypowerImageProvider(ToolProvider):
@@ -17,13 +19,17 @@ class FlypowerImageProvider(ToolProvider):
             raise ToolProviderCredentialValidationError("请填写 API Key")
 
         try:
-            client = OpenAI(
-                api_key=api_key,
-                base_url=normalize_openai_base_url(endpoint_url),
+            available_models = fetch_openai_model_ids(endpoint_url, api_key)
+        except ValueError as error:
+            raise ToolProviderCredentialValidationError(str(error)) from error
+        except ModelListRequestError as error:
+            logger.warning(
+                "flypower.model_list_validation_failed category=%s endpoint=%s status_code=%s",
+                error.category,
+                error.endpoint,
+                error.status_code,
             )
-            available_models = extract_model_ids(client.models.list())
-        except Exception as error:
-            raise ToolProviderCredentialValidationError(f"凭据校验请求失败：{error}") from error
+            raise ToolProviderCredentialValidationError(f"/models 校验失败：{error}") from error
 
         supported_models = image_model_ids()
         matched_models = sorted(supported_models & available_models)
