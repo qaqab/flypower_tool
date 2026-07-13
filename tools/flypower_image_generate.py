@@ -50,10 +50,8 @@ class FlypowerImageGenerateTool(Tool):
             return
 
         reference_urls = self._parse_urls(tool_parameters.get("reference_image_urls"))
-        reference_files = self._extract_files(tool_parameters.get("reference_image_files"))
         mask_url = self._first_url(tool_parameters.get("mask_url"))
-        mask_file = self._first_file(tool_parameters.get("mask_file"))
-        operation = "edit" if reference_urls or reference_files else "generate"
+        operation = "edit" if reference_urls else "generate"
         if not image_model_supports_operation(model, operation):
             yield self.create_text_message(f"Model {model} does not support {operation} in the image model YAML.")
             return
@@ -95,18 +93,15 @@ class FlypowerImageGenerateTool(Tool):
                 yield self.create_text_message(error)
                 return
 
-            if reference_urls or reference_files:
-                reference_count = len(reference_urls) + len(reference_files)
+            if reference_urls:
+                reference_count = len(reference_urls)
                 if reference_count > MAX_REFERENCE_IMAGES:
                     yield self.create_text_message(f"Error: At most {MAX_REFERENCE_IMAGES} reference images are supported.")
                     return
-                if mask_url and mask_file:
-                    yield self.create_text_message("Error: Use either mask_url or mask_file, not both.")
-                    return
-                response = self._edit_images_with_files(client, args, reference_urls, reference_files, mask_url, mask_file)
+                response = self._edit_images_with_files(client, args, reference_urls, mask_url)
             else:
-                if mask_url or mask_file:
-                    yield self.create_text_message("Error: mask requires at least one reference image URL or file.")
+                if mask_url:
+                    yield self.create_text_message("Error: mask requires at least one reference image URL.")
                     return
                 response = client.images.generate(**args)
         except Exception as error:
@@ -210,19 +205,6 @@ class FlypowerImageGenerateTool(Tool):
         return urls[0] if urls else None
 
     @staticmethod
-    def _extract_files(value: object) -> list[Any]:
-        if value in (None, ""):
-            return []
-        if isinstance(value, list):
-            return [item for item in value if item]
-        return [value]
-
-    @staticmethod
-    def _first_file(value: object) -> Any | None:
-        files = FlypowerImageGenerateTool._extract_files(value)
-        return files[0] if files else None
-
-    @staticmethod
     def _validate_http_url(url: str) -> None:
         parsed = urlparse(url)
         if url.startswith("data:image/"):
@@ -235,26 +217,19 @@ class FlypowerImageGenerateTool(Tool):
         client: OpenAI,
         args: dict[str, Any],
         reference_urls: list[str],
-        reference_files: list[Any],
         mask_url: str | None,
-        mask_file_param: Any | None,
     ) -> Any:
         image_files: list[io.BytesIO] = []
         mask_file: io.BytesIO | None = None
         try:
             for index, url in enumerate(reference_urls, start=1):
                 image_files.append(FlypowerImageGenerateTool._download_input_image(url, default_name=f"reference_image_{index}"))
-            for index, file_obj in enumerate(reference_files, start=len(image_files) + 1):
-                image_files.append(FlypowerImageGenerateTool._uploaded_file_to_image(file_obj, default_name=f"reference_image_{index}"))
 
             multipart_args = dict(args)
             multipart_args["image"] = image_files[0] if len(image_files) == 1 else image_files
 
             if mask_url:
                 mask_file = FlypowerImageGenerateTool._download_input_image(mask_url, default_name="mask_image")
-                multipart_args["mask"] = mask_file
-            elif mask_file_param:
-                mask_file = FlypowerImageGenerateTool._uploaded_file_to_image(mask_file_param, default_name="mask_image")
                 multipart_args["mask"] = mask_file
 
             return client.images.edit(**multipart_args)
@@ -298,32 +273,6 @@ class FlypowerImageGenerateTool(Tool):
         return image_file
 
     @staticmethod
-    def _uploaded_file_to_image(file_obj: Any, *, default_name: str) -> io.BytesIO:
-        mime_type = FlypowerImageGenerateTool._file_value(file_obj, "mime_type")
-        if mime_type and not str(mime_type).startswith("image/"):
-            raise ValueError(f"Uploaded file is not an image: {FlypowerImageGenerateTool._file_value(file_obj, 'filename') or default_name}")
-
-        blob = FlypowerImageGenerateTool._file_value(file_obj, "blob")
-        if blob is None and hasattr(file_obj, "read"):
-            blob = file_obj.read()
-        if blob is None and isinstance(file_obj, dict) and file_obj.get("url"):
-            return FlypowerImageGenerateTool._download_input_image(str(file_obj["url"]), default_name=default_name)
-        if not isinstance(blob, bytes):
-            raise ValueError(f"Uploaded file has no readable image content: {default_name}")
-        if len(blob) > MAX_INPUT_DOWNLOAD_BYTES:
-            raise ValueError(f"Uploaded image is larger than {MAX_INPUT_DOWNLOAD_BYTES // 1024 // 1024}MB: {default_name}")
-
-        filename = FlypowerImageGenerateTool._file_value(file_obj, "filename")
-        image_file = io.BytesIO(blob)
-        image_file.name = FlypowerImageGenerateTool._upload_filename(str(filename or ""), str(mime_type or ""), default_name)
-        return image_file
-
-    @staticmethod
-    def _file_value(file_obj: Any, key: str) -> Any:
-        if isinstance(file_obj, dict):
-            return file_obj.get(key)
-        return getattr(file_obj, key, None)
-
     @staticmethod
     def _guess_extension(url: str, content_type: str) -> str:
         if content_type:
@@ -333,16 +282,6 @@ class FlypowerImageGenerateTool(Tool):
 
         guessed_type, _ = mimetypes.guess_type(urlparse(url).path)
         return FlypowerImageGenerateTool._extension_for_mime_type(guessed_type or "") or ".png"
-
-    @staticmethod
-    def _upload_filename(filename: str, mime_type: str, default_name: str) -> str:
-        cleaned = filename.strip().split("/")[-1]
-        if "." in cleaned:
-            return cleaned
-
-        guessed_type, _ = mimetypes.guess_type(cleaned)
-        extension = FlypowerImageGenerateTool._extension_for_mime_type(mime_type or guessed_type or "")
-        return f"{cleaned or default_name}{extension}"
 
     @staticmethod
     def _extension_for_mime_type(mime_type: str) -> str:
