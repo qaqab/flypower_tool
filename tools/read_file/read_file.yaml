@@ -7,8 +7,16 @@ identity:
 description:
   human:
     en_US: Convert public URLs into Flypower context for the next model call.
-    zh_Hans: 将公开 URL 转换为下一次模型调用可识别的 Flypower 上下文。
-  llm: Use this tool when public image or document URLs must be attached to the next model call. Pass URLs separated by commas or new lines.
+    zh_Hans: |-
+      - 需要读取文件的时候使用本工具。
+      - 支持以下格式图片： PNG, JPG, JPEG
+      - 支持以下格式文件： PDF, MD, XLSX, CSV, TXT, HTML
+      - 不支持其他任何格式
+  llm: |-
+    - 需要读取文件的时候使用本工具。
+    - 支持以下格式图片： PNG, JPG, JPEG
+    - 支持以下格式文件： PDF, MD, XLSX, CSV, TXT, HTML
+    - 不支持其他任何格式
 parameters:
   - name: url_list
     type: string
@@ -18,9 +26,9 @@ parameters:
       en_US: URLs
       zh_Hans: URL 列表
     human_description:
-      en_US: Public HTTP or HTTPS URLs separated by commas or new lines.
-      zh_Hans: 用逗号或换行分隔的公开 HTTP 或 HTTPS URL。
-    llm_description: Public HTTP or HTTPS URLs separated by commas or new lines. Do not include local or internal URLs.
+      en_US: "Public URLs separated by commas or new lines. Supported images: PNG, JPG, JPEG. Supported files: PDF, MD, XLSX, CSV, TXT, HTML."
+      zh_Hans: "用逗号或换行分隔的 URL 列表。支持图片：PNG、JPG、JPEG；支持文件：PDF、MD、XLSX、CSV、TXT、HTML；不支持其他格式。"
+    llm_description: "需要读取文件时使用。传入用逗号或换行分隔的 URL 列表。只支持 PNG、JPG、JPEG、PDF、MD、XLSX、CSV、TXT、HTML；不支持其他格式。"
 extra:
   python:
     source: tools/read_file/read_file.py

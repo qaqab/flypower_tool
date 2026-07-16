@@ -18,20 +18,20 @@ identity:
 parameters:
 - form: llm
   human_description:
-    en_US: Detailed image prompt.
-    zh_Hans: 详细的图像提示词。
+    en_US: Required image-generation or image-editing prompt.
+    zh_Hans: 必填。生成或编辑图片的提示词。
   label:
     en_US: Prompt
     zh_Hans: 提示词
-  llm_description: Detailed image prompt. Describe the desired image clearly.
+  llm_description: 必填。描述要生成或编辑的图片内容。
   name: prompt
   required: true
   type: string
 - default: gpt-image-2
   form: form
   human_description:
-    en_US: Select the GPT image model.
-    zh_Hans: 选择 GPT 图像模型。
+    en_US: Select the image model used by this tool.
+    zh_Hans: 选择本工具使用的图片模型。
   label:
     en_US: Model
     zh_Hans: 模型
@@ -61,23 +61,23 @@ parameters:
   type: select
 - form: llm
   human_description:
-    en_US: Optional reference image URLs. Separate multiple URLs with new lines, commas, or a JSON array.
-    zh_Hans: 可选参考图 URL。多个 URL 可用换行、逗号或 JSON 数组分隔。
+    en_US: Optional reference image URLs for image editing. Separate multiple URLs with new lines, commas, or a JSON array.
+    zh_Hans: 可选。用于图片编辑的参考图 URL；多个 URL 可用换行、逗号或 JSON 数组分隔。
   label:
     en_US: Reference Image URLs
     zh_Hans: 参考图 URL
-  llm_description: Optional image URLs used as references. Separate multiple URLs with new lines, commas, or a JSON array.
+  llm_description: 可选。编辑图片时传入参考图 URL；多个 URL 可用换行、逗号或 JSON 数组分隔。
   name: reference_image_urls
   required: false
   type: string
 - form: llm
   human_description:
-    en_US: Optional mask image URL used for inpainting. Requires at least one reference image URL.
-    zh_Hans: 可选蒙版图 URL，用于局部编辑。需要同时提供至少一个参考图 URL。
+    en_US: Optional mask image URL for inpainting. Requires at least one reference image URL.
+    zh_Hans: 可选。局部编辑使用的蒙版图 URL；必须同时提供至少一个参考图 URL。
   label:
     en_US: Mask URL
     zh_Hans: 蒙版 URL
-  llm_description: Optional mask image URL used for inpainting. Requires at least one reference image URL.
+  llm_description: 可选。局部编辑使用的蒙版图 URL；必须同时提供至少一个参考图 URL。
   name: mask_url
   required: false
   type: string

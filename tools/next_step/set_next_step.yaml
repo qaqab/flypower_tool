@@ -7,8 +7,18 @@ identity:
 description:
   human:
     en_US: Set the next task state, objective, and reasoning effort for the next model call.
-    zh_Hans: 设置下一步任务状态、目标和下一次模型调用的推理强度。
-  llm: Set the next agent task state and objective. Select the reasoning effort for the following model call.
+    zh_Hans: |-
+      设置任务下一轮的执行状态、目标和 reasoning effort。可与业务工具并发调用。
+      **next_state：**下一轮状态, 可选： plan / act / observe / verify / write_output
+      **next_effort：**下一轮的 resoning effort， 可选： low / medium / high / xhigh
+      **next_objective：**下一轮要完成的具体目标，保持简短。
+      **effort_reason：**下一轮 resoning effort 选择的理解。
+  llm: |-
+    设置任务下一轮的执行状态、目标和 reasoning effort。可与业务工具并发调用。
+    **next_state：**下一轮状态, 可选： plan / act / observe / verify / write_output
+    **next_effort：**下一轮的 resoning effort， 可选： low / medium / high / xhigh
+    **next_objective：**下一轮要完成的具体目标，保持简短。
+    **effort_reason：**下一轮 resoning effort 选择的理解。
 parameters:
   - name: next_state
     type: select
@@ -26,8 +36,10 @@ parameters:
       - value: write_output
         label: {en_US: Write Output, zh_Hans: 输出结果}
     label: {en_US: Next State, zh_Hans: 下一步状态}
-    human_description: {en_US: The agent's next execution state., zh_Hans: Agent 下一步的执行状态。}
-    llm_description: Choose the next execution state.
+    human_description:
+      en_US: "Next-round execution state: plan, act, observe, verify, or write_output."
+      zh_Hans: "下一轮状态，可选：plan / act / observe / verify / write_output。"
+    llm_description: "下一轮状态。只能选择 plan / act / observe / verify / write_output。"
   - name: next_effort
     type: select
     required: true
@@ -42,22 +54,28 @@ parameters:
       - value: xhigh
         label: {en_US: Extra High, zh_Hans: 极高}
     label: {en_US: Reasoning Effort, zh_Hans: 推理强度}
-    human_description: {en_US: Reasoning effort for the following model call., zh_Hans: 下一次模型调用的推理强度。}
-    llm_description: Choose low, medium, high, or xhigh for the following model call.
+    human_description:
+      en_US: "Reasoning effort for the next model call: low, medium, high, or xhigh."
+      zh_Hans: "下一轮的 resoning effort，可选：low / medium / high / xhigh。"
+    llm_description: "下一轮的 resoning effort。只能选择 low / medium / high / xhigh。"
   - name: next_objective
     type: string
     required: true
     form: llm
     label: {en_US: Next Objective, zh_Hans: 下一步目标}
-    human_description: {en_US: A short, concrete objective for the next step., zh_Hans: 下一步要完成的简短具体目标。}
-    llm_description: State the next concrete objective concisely.
+    human_description:
+      en_US: "Short, concrete objective for the next round."
+      zh_Hans: "下一轮要完成的具体目标，保持简短。"
+    llm_description: "下一轮要完成的具体目标，保持简短。"
   - name: effort_reason
     type: string
     required: true
     form: llm
     label: {en_US: Effort Reason, zh_Hans: 强度理由}
-    human_description: {en_US: Why this reasoning effort is appropriate., zh_Hans: 选择该推理强度的理由。}
-    llm_description: Briefly explain why this reasoning effort is appropriate.
+    human_description:
+      en_US: "Why the selected reasoning effort is appropriate for the next round."
+      zh_Hans: "下一轮 resoning effort 选择的理解。"
+    llm_description: "下一轮 resoning effort 选择的理解。"
 extra:
   python:
     source: tools/next_step/set_next_step.py

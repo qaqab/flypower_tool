@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import mimetypes
 import time
+import uuid
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
@@ -24,15 +27,12 @@ from tools.image._image_utils import (
     image_model_supports_operation,
     normalize_openai_base_url,
 )
+from tools._sls_logging import write_tool_log
 
 
 MAX_REFERENCE_IMAGES = 16
 MAX_INPUT_DOWNLOAD_BYTES = 50 * 1024 * 1024
 INPUT_DOWNLOAD_TIMEOUT = 300
-OSS_API_BASE_URL = "https://workflo-us-east-thprglhuxf.us-east-1.fcapp.run/workflow-tools-api"
-OSS_FILE_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-file/upload"
-OSS_URL_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-url/upload"
-OSS_API_TOKEN = "prod_flyfus_cf5e6f0ceba969e6e07f0bce32d7a9a3"
 OSS_UPLOAD_TIMEOUT = (10.0, 120.0)
 MAX_OSS_UPLOAD_WORKERS = 4
 MAX_INVALID_JSON_RETRIES = 3
@@ -40,6 +40,7 @@ MAX_INVALID_JSON_RETRIES = 3
 
 class FlypowerImageGenerateTool(Tool):
     def _invoke(self, tool_parameters: dict) -> Generator[ToolInvokeMessage, None, None]:
+        log_id = str(uuid.uuid4())
         prompt = tool_parameters.get("prompt")
         if not prompt or not isinstance(prompt, str):
             yield from self._error_messages("Error: Prompt is required.")
@@ -141,9 +142,10 @@ class FlypowerImageGenerateTool(Tool):
 
         try:
             with ThreadPoolExecutor(max_workers=min(MAX_OSS_UPLOAD_WORKERS, len(uploads))) as executor:
-                oss_urls = list(executor.map(self._upload_output_to_oss, uploads))
+                upload_to_oss = partial(self._upload_output_to_oss, log_id=log_id)
+                oss_urls = list(executor.map(upload_to_oss, uploads))
         except Exception as error:
-            yield from self._error_messages(f"Failed to upload generated images to OSS: {error}")
+            yield from self._error_messages(f"Failed to upload generated images to OSS (log_id={log_id}): {error}")
             return
 
         usage_metadata = build_usage_metadata(response)
@@ -177,29 +179,85 @@ class FlypowerImageGenerateTool(Tool):
     def _output_filename(index: int, mime_type: str) -> str:
         return f"generated_image_{index}{FlypowerImageGenerateTool._extension_for_mime_type(mime_type)}"
 
-    @staticmethod
-    def _upload_output_to_oss(upload: tuple[str, bytes | str, str, str]) -> str:
+    def _upload_output_to_oss(self, upload: tuple[str, bytes | str, str, str], *, log_id: str) -> str:
         upload_type, payload, mime_type, filename = upload
-        headers = {"Accept": "application/json", "Authorization": f"Bearer {OSS_API_TOKEN}"}
-        if upload_type == "url":
-            response = requests.post(
-                OSS_URL_UPLOAD_ENDPOINT,
-                headers=headers,
-                json={"image_url": payload},
-                timeout=OSS_UPLOAD_TIMEOUT,
-                allow_redirects=False,
+        payload_size = len(payload) if isinstance(payload, bytes) else None
+        payload_sha256 = hashlib.sha256(payload).hexdigest() if isinstance(payload, bytes) else None
+        oss_api_base_url = str(self.runtime.credentials.get("oss_api_base_url") or "").strip().rstrip("/")
+        oss_api_token = str(self.runtime.credentials.get("oss_api_token") or "")
+        if not oss_api_base_url or not oss_api_token:
+            raise RuntimeError("OSS API base URL and token are required.")
+
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {oss_api_token}"}
+        endpoint = f"{oss_api_base_url}/v1/oss-assets/image-{'url' if upload_type == 'url' else 'file'}/upload"
+        started_at = time.monotonic()
+        try:
+            if upload_type == "url":
+                response = requests.post(
+                    endpoint,
+                    headers=headers,
+                    json={"image_url": payload},
+                    timeout=OSS_UPLOAD_TIMEOUT,
+                    allow_redirects=False,
+                )
+            else:
+                response = requests.post(
+                    endpoint,
+                    headers=headers,
+                    files={"file": (filename, payload, mime_type), "filename": (None, filename)},
+                    timeout=OSS_UPLOAD_TIMEOUT,
+                    allow_redirects=False,
+                )
+        except requests.RequestException as error:
+            self._write_oss_log(
+                log_id,
+                "request_failed",
+                upload_type=upload_type,
+                endpoint=endpoint,
+                filename=filename,
+                mime_type=mime_type or "-",
+                payload_size=payload_size,
+                payload_sha256=payload_sha256,
+                error=str(error),
             )
-        else:
-            response = requests.post(
-                OSS_FILE_UPLOAD_ENDPOINT,
-                headers=headers,
-                files={"file": (filename, payload, mime_type), "filename": (None, filename)},
-                timeout=OSS_UPLOAD_TIMEOUT,
-                allow_redirects=False,
-            )
+            raise RuntimeError(f"OSS upload request failed for {endpoint} (log_id={log_id}): {error}") from error
+
+        elapsed_ms = round((time.monotonic() - started_at) * 1000)
+        request_id = response.headers.get("x-fc-request-id") or response.headers.get("x-request-id") or ""
 
         if not 200 <= response.status_code < 300:
-            raise RuntimeError(f"OSS upload returned HTTP {response.status_code}")
+            response_text = str(getattr(response, "text", "")).strip()
+            self._write_oss_log(
+                log_id,
+                "failed",
+                upload_type=upload_type,
+                endpoint=endpoint,
+                filename=filename,
+                mime_type=mime_type or "-",
+                payload_size=payload_size,
+                payload_sha256=payload_sha256,
+                status_code=response.status_code,
+                elapsed_ms=elapsed_ms,
+                request_id=request_id or "-",
+                response_body=" ".join(response_text.split())[:500] or "-",
+            )
+            detail = f": {response_text[:500]}" if response_text else ""
+            request_id_detail = f" (request_id={request_id})" if request_id else ""
+            raise RuntimeError(f"OSS upload returned HTTP {response.status_code}{request_id_detail} (log_id={log_id}){detail}")
+
+        self._write_oss_log(
+            log_id,
+            "succeeded",
+            upload_type=upload_type,
+            endpoint=endpoint,
+            filename=filename,
+            mime_type=mime_type or "-",
+            payload_size=payload_size,
+            payload_sha256=payload_sha256,
+            status_code=response.status_code,
+            elapsed_ms=elapsed_ms,
+            request_id=request_id or "-",
+        )
         try:
             response_body = response.json()
             public_url = response_body["data"]["public_url"]
@@ -208,6 +266,9 @@ class FlypowerImageGenerateTool(Tool):
         if not isinstance(public_url, str) or not public_url:
             raise RuntimeError("OSS upload returned an invalid public URL")
         return public_url
+
+    def _write_oss_log(self, log_id: str, event: str, **fields: object) -> None:
+        write_tool_log(self.runtime.credentials, log_id, f"oss_upload_{event}", **fields)
 
     @staticmethod
     def _parse_urls(value: object) -> list[str]:
