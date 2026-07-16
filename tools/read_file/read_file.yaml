@@ -1,0 +1,26 @@
+identity:
+  author: qaqab
+  name: read_file
+  label:
+    en_US: Read File
+    zh_Hans: 读取文件 URL
+description:
+  human:
+    en_US: Convert public URLs into Flypower context for the next model call.
+    zh_Hans: 将公开 URL 转换为下一次模型调用可识别的 Flypower 上下文。
+  llm: Use this tool when public image or document URLs must be attached to the next model call. Pass URLs separated by commas or new lines.
+parameters:
+  - name: url_list
+    type: string
+    required: true
+    form: llm
+    label:
+      en_US: URLs
+      zh_Hans: URL 列表
+    human_description:
+      en_US: Public HTTP or HTTPS URLs separated by commas or new lines.
+      zh_Hans: 用逗号或换行分隔的公开 HTTP 或 HTTPS URL。
+    llm_description: Public HTTP or HTTPS URLs separated by commas or new lines. Do not include local or internal URLs.
+extra:
+  python:
+    source: tools/read_file/read_file.py

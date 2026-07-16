@@ -43,3 +43,4 @@ identity:
 tools:
   - tools/image/flypower_image_generate.yaml
   - tools/next_step/set_next_step.yaml
+  - tools/read_file/read_file.yaml

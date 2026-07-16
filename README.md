@@ -15,6 +15,7 @@ It provides image generation and agent next-step control tools.
 
 - `flypower_image_generate`: generate or edit images through an OpenAI-compatible endpoint.
 - `set_next_step`: return the next objective and reasoning effort for the following model call.
+- `read_file`: convert comma- or newline-separated public URLs into Flypower context for the next model call.
 >>>>>>> 1ac0c0a (Rename plugin to Flypower Tool)
 
 ## Configuration
