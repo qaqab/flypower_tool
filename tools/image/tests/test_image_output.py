@@ -38,7 +38,7 @@ def test_image_generation_returns_urls_as_a_json_array(monkeypatch) -> None:
     )
     messages = list(tool.invoke({"prompt": "Two test images", "model": "gpt-image-2"}))
 
-    assert len(messages) == 1
+    assert len(messages) == 2
     message: ToolInvokeMessage = messages[0]
     assert message.message.json_object == {
         "urls": [
@@ -46,3 +46,4 @@ def test_image_generation_returns_urls_as_a_json_array(monkeypatch) -> None:
             "https://cdn.example/image-2.png",
         ]
     }
+    assert messages[1].message.text == '["https://cdn.example/image-1.png", "https://cdn.example/image-2.png"]'

@@ -134,6 +134,7 @@ class FlypowerImageGenerateTool(Tool):
 
         usage_metadata = build_usage_metadata(response)
         yield self.create_json_message({"urls": oss_urls, **usage_metadata})
+        yield self.create_text_message(json.dumps(oss_urls, ensure_ascii=False))
 
     @staticmethod
     def _output_filename(index: int, mime_type: str) -> str:
