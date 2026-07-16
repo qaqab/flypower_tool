@@ -40,46 +40,50 @@ class FlypowerImageGenerateTool(Tool):
     def _invoke(self, tool_parameters: dict) -> Generator[ToolInvokeMessage, None, None]:
         prompt = tool_parameters.get("prompt")
         if not prompt or not isinstance(prompt, str):
-            yield self.create_text_message("Error: Prompt is required.")
+            yield from self._error_messages("Error: Prompt is required.")
             return
 
         model = tool_parameters.get("model", "gpt-image-2")
         supported_models = image_model_ids()
         if model not in supported_models:
-            yield self.create_text_message(f"Invalid model. Choose from: {', '.join(sorted(supported_models))}.")
+            yield from self._error_messages(f"Invalid model. Choose from: {', '.join(sorted(supported_models))}.")
             return
 
-        reference_urls = self._parse_urls(tool_parameters.get("reference_image_urls"))
-        mask_url = self._first_url(tool_parameters.get("mask_url"))
+        try:
+            reference_urls = self._parse_urls(tool_parameters.get("reference_image_urls"))
+            mask_url = self._first_url(tool_parameters.get("mask_url"))
+        except ValueError as error:
+            yield from self._error_messages(str(error))
+            return
         operation = "edit" if reference_urls else "generate"
         if not image_model_supports_operation(model, operation):
-            yield self.create_text_message(f"Model {model} does not support {operation} in the image model YAML.")
+            yield from self._error_messages(f"Model {model} does not support {operation} in the image model YAML.")
             return
 
         api_key = str(self.runtime.credentials.get("api_key") or "")
         if not api_key:
-            yield self.create_text_message("API key is required for image generation.")
+            yield from self._error_messages("API key is required for image generation.")
             return
         try:
             normalized_base_url = normalize_openai_base_url(self.runtime.credentials.get("endpoint_url"))
             if normalized_base_url is None:
-                yield self.create_text_message("API endpoint is missing.")
+                yield from self._error_messages("API endpoint is missing.")
                 return
             available_models = fetch_openai_model_ids(normalized_base_url, api_key)
         except ValueError as error:
-            yield self.create_text_message(f"Invalid API endpoint: {error}")
+            yield from self._error_messages(f"Invalid API endpoint: {error}")
             return
         except ModelListRequestError as error:
-            yield self.create_text_message(f"Failed to validate API access: {error}")
+            yield from self._error_messages(f"Failed to validate API access: {error}")
             return
         if model not in available_models:
             matched_models = sorted(supported_models & available_models)
             if matched_models:
-                yield self.create_text_message(
+                yield from self._error_messages(
                     f"Model {model} is not available from /models. Available image models: {', '.join(matched_models)}."
                 )
             else:
-                yield self.create_text_message(
+                yield from self._error_messages(
                     f"No supported image model was returned by /models. Expected one of: {', '.join(sorted(supported_models))}."
                 )
             return
@@ -93,48 +97,56 @@ class FlypowerImageGenerateTool(Tool):
             }
             error = self._apply_common_parameters(args, tool_parameters, model=model)
             if error:
-                yield self.create_text_message(error)
+                yield from self._error_messages(error)
                 return
 
             if reference_urls:
                 reference_count = len(reference_urls)
                 if reference_count > MAX_REFERENCE_IMAGES:
-                    yield self.create_text_message(f"Error: At most {MAX_REFERENCE_IMAGES} reference images are supported.")
+                    yield from self._error_messages(f"Error: At most {MAX_REFERENCE_IMAGES} reference images are supported.")
                     return
                 response = self._edit_images_with_files(client, args, reference_urls, mask_url)
             else:
                 if mask_url:
-                    yield self.create_text_message("Error: mask requires at least one reference image URL.")
+                    yield from self._error_messages("Error: mask requires at least one reference image URL.")
                     return
                 response = client.images.generate(**args)
         except Exception as error:
-            yield self.create_text_message(f"Failed to {operation} image: {error}")
+            yield from self._error_messages(f"Failed to {operation} image: {error}")
             return
 
         uploads: list[tuple[str, bytes | str, str, str]] = []
-        for index, image in enumerate(getattr(response, "data", []), start=1):
-            b64_json = getattr(image, "b64_json", None)
-            image_url = getattr(image, "url", None)
-            if b64_json:
-                mime_type, blob_image = decode_image(b64_json)
-                uploads.append(("file", blob_image, mime_type, self._output_filename(index, mime_type)))
-            elif image_url:
-                uploads.append(("url", str(image_url), "", ""))
+        try:
+            for index, image in enumerate(getattr(response, "data", []), start=1):
+                b64_json = getattr(image, "b64_json", None)
+                image_url = getattr(image, "url", None)
+                if b64_json:
+                    mime_type, blob_image = decode_image(b64_json)
+                    uploads.append(("file", blob_image, mime_type, self._output_filename(index, mime_type)))
+                elif image_url:
+                    uploads.append(("url", str(image_url), "", ""))
+        except Exception as error:
+            yield from self._error_messages(f"Failed to process generated images: {error}")
+            return
 
         if not uploads:
-            yield self.create_text_message("The image model did not return any images.")
+            yield from self._error_messages("The image model did not return any images.")
             return
 
         try:
             with ThreadPoolExecutor(max_workers=min(MAX_OSS_UPLOAD_WORKERS, len(uploads))) as executor:
                 oss_urls = list(executor.map(self._upload_output_to_oss, uploads))
         except Exception as error:
-            yield self.create_text_message(f"Failed to upload generated images to OSS: {error}")
+            yield from self._error_messages(f"Failed to upload generated images to OSS: {error}")
             return
 
         usage_metadata = build_usage_metadata(response)
         yield self.create_json_message({"urls": oss_urls, **usage_metadata})
         yield self.create_text_message(json.dumps(oss_urls, ensure_ascii=False))
+
+    def _error_messages(self, error: str) -> Generator[ToolInvokeMessage, None, None]:
+        yield self.create_json_message({"urls": [], "error": error})
+        yield self.create_text_message("[]")
 
     @staticmethod
     def _output_filename(index: int, mime_type: str) -> str:

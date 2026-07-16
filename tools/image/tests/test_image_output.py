@@ -47,3 +47,15 @@ def test_image_generation_returns_urls_as_a_json_array(monkeypatch) -> None:
         ]
     }
     assert messages[1].message.text == '["https://cdn.example/image-1.png", "https://cdn.example/image-2.png"]'
+
+
+def test_image_generation_returns_an_empty_url_array_and_error_on_failure() -> None:
+    tool = FlypowerImageGenerateTool.from_credentials({})
+    messages = list(tool.invoke({"prompt": "A test image", "model": "gpt-image-2"}))
+
+    assert len(messages) == 2
+    assert messages[0].message.json_object == {
+        "urls": [],
+        "error": "API key is required for image generation.",
+    }
+    assert messages[1].message.text == "[]"
