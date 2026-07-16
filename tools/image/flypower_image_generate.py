@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
+import time
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ OSS_URL_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-url/upload"
 OSS_API_TOKEN = "prod_flyfus_cf5e6f0ceba969e6e07f0bce32d7a9a3"
 OSS_UPLOAD_TIMEOUT = (10.0, 120.0)
 MAX_OSS_UPLOAD_WORKERS = 4
+MAX_INVALID_JSON_RETRIES = 3
 
 
 class FlypowerImageGenerateTool(Tool):
@@ -105,12 +107,16 @@ class FlypowerImageGenerateTool(Tool):
                 if reference_count > MAX_REFERENCE_IMAGES:
                     yield from self._error_messages(f"Error: At most {MAX_REFERENCE_IMAGES} reference images are supported.")
                     return
-                response = self._edit_images_with_files(client, args, reference_urls, mask_url)
+                response = self._run_image_request_with_invalid_json_retry(
+                    lambda: self._edit_images_with_files(client, args, reference_urls, mask_url)
+                )
             else:
                 if mask_url:
                     yield from self._error_messages("Error: mask requires at least one reference image URL.")
                     return
-                response = client.images.generate(**args)
+                response = self._run_image_request_with_invalid_json_retry(
+                    lambda: client.images.generate(**args)
+                )
         except Exception as error:
             yield from self._error_messages(f"Failed to {operation} image: {error}")
             return
@@ -147,6 +153,25 @@ class FlypowerImageGenerateTool(Tool):
     def _error_messages(self, error: str) -> Generator[ToolInvokeMessage, None, None]:
         yield self.create_json_message({"urls": [], "error": error})
         yield self.create_text_message("[]")
+
+    @staticmethod
+    def _run_image_request_with_invalid_json_retry(request):
+        for attempt in range(MAX_INVALID_JSON_RETRIES + 1):
+            try:
+                return request()
+            except Exception as error:
+                if attempt >= MAX_INVALID_JSON_RETRIES or not FlypowerImageGenerateTool._is_invalid_json_error(error):
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+
+        raise RuntimeError("Image request retry loop exited unexpectedly.")
+
+    @staticmethod
+    def _is_invalid_json_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return "json_invalid" in message or (
+            "invalid json" in message and ("<!doctype html" in message or "expected value" in message)
+        )
 
     @staticmethod
     def _output_filename(index: int, mime_type: str) -> str:
