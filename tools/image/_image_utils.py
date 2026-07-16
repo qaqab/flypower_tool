@@ -10,7 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 import yaml
 
-IMAGE_MODELS_DIR = Path(__file__).resolve().parents[1] / "models" / "image"
+IMAGE_MODELS_DIR = Path(__file__).resolve().parent / "models"
 MODEL_LIST_TIMEOUT: Final = (10.0, 30.0)
 
 
