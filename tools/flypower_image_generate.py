@@ -28,10 +28,10 @@ from tools._image_utils import (
 MAX_REFERENCE_IMAGES = 16
 MAX_INPUT_DOWNLOAD_BYTES = 50 * 1024 * 1024
 INPUT_DOWNLOAD_TIMEOUT = 300
-OSS_API_BASE_URL = "https://workflotool-api-zelbzoxobn.cn-hangzhou.fcapp.run/workflow-tools-api"
+OSS_API_BASE_URL = "https://workflo-us-east-thprglhuxf.us-east-1.fcapp.run/workflow-tools-api"
 OSS_FILE_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-file/upload"
 OSS_URL_UPLOAD_ENDPOINT = f"{OSS_API_BASE_URL}/v1/oss-assets/image-url/upload"
-OSS_API_TOKEN = "test_flyfus_dcdbd11d8e4c21b2d86c5de3473ace5d"
+OSS_API_TOKEN = "prod_flyfus_cf5e6f0ceba969e6e07f0bce32d7a9a3"
 OSS_UPLOAD_TIMEOUT = (10.0, 120.0)
 MAX_OSS_UPLOAD_WORKERS = 4
 
